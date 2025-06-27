@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Teste API</title>
+</head>
+<body>
+    <h1>Teste das APIs</h1>
+    <div id="result"></div>
+    
+    <script>
+        async function testAPI() {
+            const resultDiv = document.getElementById('result');
+            
+            try {
+                // Teste 1: API de restaurantes
+                const response = await fetch('/api/restaurantes/');
+                const data = await response.json();
+                
+                resultDiv.innerHTML = `
+                    <h2>Status da API: ${response.status}</h2>
+                    <p>Dados recebidos: ${JSON.stringify(data, null, 2)}</p>
+                `;
+            } catch (error) {
+                resultDiv.innerHTML = `
+                    <h2>Erro na API</h2>
+                    <p>Erro: ${error.message}</p>
+                `;
+            }
+        }
+        
+        testAPI();
+    </script>
+</body>
+</html> 
