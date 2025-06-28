@@ -31,24 +31,35 @@ export default function ReceitaForm() {
   
   // Verificar se é admin global (is_staff ou is_superuser)
   const isAdmin = perfis && perfis.some(p => p.perfil === 'administrador' && p.restaurante === null);
-  const podeEditar = perfil === 'administrador' || perfil === 'redator' || isAdmin;
+  const podeEditar = perfil === 'administrador' || perfil === 'redator' || perfil === 'master' || isAdmin;
 
-  // Carregar insumos do restaurante
+  // Carregar insumos do restaurante (apenas para cadastro)
   useEffect(() => {
+    if (receitaId) return; // Não busca insumos aqui se for edição
+    console.log('[ReceitaForm] useEffect insumos (cadastro)', { id });
     const token = localStorage.getItem('token');
-    if (!token) return;
+    if (!token || !id || isNaN(Number(id))) {
+      console.warn('[ReceitaForm] Token ou id inválido para buscar insumos', { token, id });
+      return;
+    }
     const headers = { Authorization: 'Bearer ' + token };
     fetch(`/api/insumos/?restaurante=${id}`, { headers })
       .then(res => res.json())
       .then(data => {
+        console.log('[ReceitaForm] Insumos carregados:', data);
         setInsumos(data);
         setLoading(false);
+      })
+      .catch(err => {
+        console.error('[ReceitaForm] Erro ao buscar insumos:', err);
+        setLoading(false);
       });
-  }, [id]);
+  }, [id, receitaId]);
 
-  // Se for edição, buscar dados da receita
+  // Se for edição, buscar dados da receita e depois os insumos do restaurante dela
   useEffect(() => {
-    if (!receitaId || loading || insumos.length === 0) return;
+    if (!receitaId) return;
+    console.log('[ReceitaForm] useEffect edição', { receitaId });
     setEditando(true);
     setLoading(true);
     const token = localStorage.getItem('token');
@@ -59,6 +70,7 @@ export default function ReceitaForm() {
         return res.json();
       })
       .then(data => {
+        console.log('[ReceitaForm] Dados da receita carregados:', data);
         setForm({
           nome: data.nome,
           tempo_preparo: data.tempo_preparo,
@@ -78,13 +90,23 @@ export default function ReceitaForm() {
           }))
         );
         if (data.imagem) setImagem(data.imagem);
-        setLoading(false);
+        // Agora busca os insumos do restaurante da receita
+        fetch(`/api/insumos/?restaurante=${data.restaurante}`, { headers })
+          .then(res => res.json())
+          .then(insumosData => {
+            setInsumos(insumosData);
+            setLoading(false);
+          })
+          .catch(err => {
+            setMsg('Erro ao carregar insumos do restaurante da receita.');
+            setLoading(false);
+          });
       })
       .catch(err => {
         setMsg(err.message);
         setLoading(false);
       });
-  }, [receitaId, insumos.length]);
+  }, [receitaId]);
 
   if (loading || loadingPerfis) return <div className="text-center text-gray-500 py-10">Carregando...</div>;
   if (!podeEditar && !isAdmin) return <div className="text-center text-red-500 py-10">Acesso negado: você não tem permissão para cadastrar ou editar receitas neste restaurante.</div>;

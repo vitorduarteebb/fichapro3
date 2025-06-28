@@ -21,12 +21,14 @@ export default function RestauranteDetalhe() {
   const perfilRestaurante = perfis && perfis.length > 0 ? perfis.find(p => String(p.restaurante) === String(id)) : null;
   let perfil = perfilRestaurante ? perfilRestaurante.perfil : null;
   
-  // Se não houver vínculo, mas o usuário for admin, considerar como administrador
-  if (!perfil && (!perfis || perfis.length === 0)) perfil = 'administrador';
+  // Se o usuário for admin global, garantir acesso total
+  if (!perfil && perfis && perfis.find(p => p.perfil === 'administrador')) perfil = 'administrador';
   
   const isAdmin = perfil === 'administrador';
-  const podeEditar = perfil === 'administrador' || perfil === 'redator';
+  const podeEditar = perfil === 'administrador' || perfil === 'redator' || perfil === 'master';
   const podeVerCusto = perfil === 'administrador' || perfil === 'master';
+  const podeCadastrar = perfil === 'administrador' || perfil === 'redator';
+  const podeEditarOuExcluir = perfil === 'administrador' || perfil === 'redator';
   
   const [editandoFator, setEditandoFator] = useState(false);
   const [fatorCorrecao, setFatorCorrecao] = useState(1.00);
@@ -172,7 +174,7 @@ export default function RestauranteDetalhe() {
         </div>
       </div>
       <div className="flex flex-wrap gap-4 mb-8 justify-center items-center">
-        {(perfil === 'administrador' || perfil === 'redator') && (
+        {podeCadastrar && (
           <>
             <Link to={`/restaurantes/${id}/receitas/novo`} className="bg-purple-700 text-white px-5 py-2 rounded font-semibold shadow hover:bg-purple-800 transition">+ Nova Receita</Link>
             <Link to={`/restaurantes/${id}/insumos`} className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 transition">Cadastrar Insumos</Link>
@@ -221,7 +223,7 @@ export default function RestauranteDetalhe() {
                   {podeVerCusto && (
                     <div className="text-xs text-gray-500">Custo total: R$ {Number(receita.custo_total).toFixed(2)}</div>
                   )}
-                  {perfil === 'redator' && (
+                  {podeEditarOuExcluir && (
                     <div className="flex gap-2 mt-2">
                       <button
                         onClick={e => { e.stopPropagation(); navigate(`/receitas/${receita.id}/editar`); }}
@@ -282,7 +284,7 @@ export default function RestauranteDetalhe() {
                       <div className="text-xs text-gray-500">Rendimento: {ficha.rendimento}</div>
                     </div>
                   </div>
-                  {perfil === 'redator' && (
+                  {podeEditarOuExcluir && (
                     <div className="flex gap-2 mt-2">
                       <button
                         onClick={e => { e.stopPropagation(); navigate(`/restaurantes/${id}/fichas-tecnicas/${ficha.id}/editar`); }}

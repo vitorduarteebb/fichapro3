@@ -12,9 +12,16 @@ export default function FichaTecnicaDetalhe() {
   const { perfis, loading: loadingPerfis } = usePerfisUsuario();
   const perfilRestaurante = perfis.find(p => String(p.restaurante) === String(ficha?.restaurante));
   let perfil = perfilRestaurante ? perfilRestaurante.perfil : null;
-  if (!perfil && perfis.length === 0) perfil = 'administrador';
+  
+  // Se não houver vínculo, mas o usuário for admin, considerar como administrador
+  if (!perfil && (!perfis || perfis.length === 0)) perfil = 'administrador';
+  
+  // Se o usuário for admin global, garantir acesso total
+  if (!perfil && perfis && perfis.find(p => p.perfil === 'administrador')) perfil = 'administrador';
+  
   const perfilLower = perfil?.toLowerCase();
-  const podeEditar = perfilLower === 'administrador' || perfilLower === 'redator';
+  const podeEditarOuExcluir = perfilLower === 'administrador' || perfilLower === 'redator';
+  const podeVerCusto = perfilLower === 'administrador' || perfilLower === 'master' || perfilLower === 'redator';
 
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -44,6 +51,24 @@ export default function FichaTecnicaDetalhe() {
       .catch(() => setErro('Erro ao excluir ficha técnica.'));
   }
 
+  // Função utilitária para formatar a quantidade de forma amigável
+  function formatarQuantidade(qtd, unidade) {
+    if (typeof qtd !== 'number') qtd = Number(qtd);
+    if (isNaN(qtd)) return '-';
+    if (unidade === 'g' && qtd >= 1000) {
+      const kg = qtd / 1000;
+      return `${kg % 1 === 0 ? kg : kg.toFixed(2).replace('.', ',')} kg`;
+    }
+    if (unidade === 'ml' && qtd >= 1000) {
+      const l = qtd / 1000;
+      return `${l % 1 === 0 ? l : l.toFixed(2).replace('.', ',')} L`;
+    }
+    if (unidade === 'un') {
+      return `${qtd % 1 === 0 ? qtd : qtd.toFixed(2).replace('.', ',')} un`;
+    }
+    return `${qtd % 1 === 0 ? qtd : qtd.toFixed(3).replace('.', ',').replace(/,?0+$/, '')} ${unidade}`;
+  }
+
   if (loading || loadingPerfis) return <div className="text-center text-gray-500 py-10">Carregando detalhes...</div>;
   if (!ficha) return <div className="text-center text-red-500 py-10">Ficha técnica não encontrada.</div>;
 
@@ -67,8 +92,12 @@ export default function FichaTecnicaDetalhe() {
           <div className="flex-1">
             <h1 className="text-3xl font-bold text-gray-900 mb-2">{ficha.nome}</h1>
             <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-gray-700 text-base mb-2">
+              <div><b>Porção:</b> {ficha.porcao}</div>
               <div><b>Rendimento:</b> {ficha.rendimento}</div>
-              <div><b>Custo total:</b> R$ {Number(ficha.custo_total).toFixed(2)}</div>
+              <div><b>Tempo de preparo:</b> {ficha.tempo_preparo} min</div>
+              {podeVerCusto && (
+                <div><b>Custo total:</b> R$ {ficha.custo_total?.toFixed(2) ?? '0.00'}</div>
+              )}
             </div>
             {(perfilLower === 'administrador' || perfilLower === 'master' || perfilLower === 'redator') && (
               <div className="grid grid-cols-2 gap-4 mt-4">
@@ -87,7 +116,7 @@ export default function FichaTecnicaDetalhe() {
               </div>
             )}
             {erro && <div className="flex items-center gap-2 text-red-600 mt-2"><XCircle size={18}/>{erro}</div>}
-            {podeEditar && (
+            {podeEditarOuExcluir && (
               <div className="flex gap-2 mt-4">
                 <button
                   onClick={() => navigate(`/restaurantes/${ficha.restaurante}/fichas-tecnicas/${fichaId}/editar`)}
@@ -109,7 +138,7 @@ export default function FichaTecnicaDetalhe() {
         <ul className="mb-6 list-disc pl-6 space-y-1">
           {(ficha.itens || []).map((item, i) => (
             <li key={i} className="text-gray-800">
-              {item.insumo_nome || item.receita_nome} - {item.quantidade_utilizada} {item.unidade_medida || ''}
+              {item.insumo_nome || item.receita_nome} - {formatarQuantidade(item.quantidade_utilizada, item.unidade_medida || '')}
             </li>
           ))}
         </ul>

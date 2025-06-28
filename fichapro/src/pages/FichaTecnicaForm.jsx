@@ -94,14 +94,13 @@ export default function FichaTecnicaForm() {
   
   // Verificar se é admin global (is_staff ou is_superuser)
   const isAdmin = perfis && perfis.some(p => p.perfil === 'administrador' && p.restaurante === null);
-  const podeEditar = perfil === 'administrador' || perfil === 'redator' || isAdmin;
+  const podeEditar = perfil === 'administrador' || perfil === 'redator' || perfil === 'master' || isAdmin;
 
   // Carregar insumos e receitas do restaurante
   useEffect(() => {
     const token = localStorage.getItem('token');
-    if (!token || !restauranteId) return;
+    if (!token || !restauranteId || isNaN(Number(restauranteId))) return;
     const headers = { Authorization: 'Bearer ' + token };
-    
     Promise.all([
       fetch(`/api/insumos/?restaurante=${restauranteId}`, { headers }).then(res => res.json()),
       fetch(`/api/receitas/?restaurante=${restauranteId}`, { headers }).then(res => res.json())
@@ -269,6 +268,13 @@ export default function FichaTecnicaForm() {
       setMsg("Preencha todos os campos e adicione pelo menos um item.");
       return;
     }
+    
+    const token = localStorage.getItem('token');
+    if (!token) {
+      setMsg("Erro de autenticação. Faça login novamente.");
+      return;
+    }
+    
     // Se for edição, atualizar ficha técnica
     if (editando && fichaId) {
       const pesoFinal = pesoSalvo;
@@ -283,50 +289,93 @@ export default function FichaTecnicaForm() {
       if (imagem) {
         formData.append('imagem', imagem);
       }
+      
       fetch(`/api/fichas-tecnicas/${fichaId}/`, {
         method: "PUT",
+        headers: { Authorization: "Bearer " + token },
         body: formData
       })
-        .then(res => res.json())
+        .then(res => {
+          if (!res.ok) {
+            throw new Error(`Erro ${res.status}: ${res.statusText}`);
+          }
+          return res.json();
+        })
         .then(data => {
           // Atualizar itens: deletar todos e recriar
-          fetch(`/api/ficha-tecnica-itens/?ficha=${fichaId}`)
-            .then(res => res.json())
+          return fetch(`/api/ficha-tecnica-itens/?ficha=${fichaId}`, {
+            headers: { Authorization: "Bearer " + token }
+          })
+            .then(res => {
+              if (!res.ok) {
+                throw new Error(`Erro ao buscar itens: ${res.status}`);
+              }
+              return res.json();
+            })
             .then(itensAntigos => {
-              Promise.all(
-                itensAntigos.map(item =>
-                  fetch(`/api/ficha-tecnica-itens/${item.id}/`, { method: "DELETE" })
-                )
-              ).then(() => {
-                Promise.all(
-                  itens.map(item => {
-                    const payload = {
-                      ficha: Number(fichaId),
-                      insumo: item.tipo === "insumo" ? Number(item.insumo) : null,
-                      receita: item.tipo === "receita" ? Number(item.receita) : null,
-                      quantidade_utilizada: Number(item.quantidade_utilizada),
-                      unidade_medida: item.unidade_medida,
-                      ic: Number(item.ic),
-                      ic_tipo: item.ic_tipo,
-                      ipc: Number(item.ipc),
-                      aplicar_ic_ipc: Boolean(item.aplicar_ic_ipc)
-                    };
-                    return fetch("/api/ficha-tecnica-itens/", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify(payload)
-                    });
-                  })
-                ).then(() => {
-                  setMsg("Ficha técnica atualizada com sucesso!");
-                  setTimeout(() => navigate(`/restaurantes/${restauranteId}`), 1200);
+              // Garantir que itensAntigos seja um array
+              const itensArray = Array.isArray(itensAntigos) ? itensAntigos : [];
+              
+              // Deletar itens antigos
+              const deletePromises = itensArray.map(item =>
+                fetch(`/api/ficha-tecnica-itens/${item.id}/`, { 
+                  method: "DELETE",
+                  headers: { Authorization: "Bearer " + token }
+                }).then(res => {
+                  if (!res.ok) {
+                    console.warn(`Erro ao deletar item ${item.id}: ${res.status}`);
+                  }
+                  return res;
+                })
+              );
+              
+              return Promise.all(deletePromises).then(() => {
+                // Criar novos itens
+                const createPromises = itens.map(item => {
+                  const payload = {
+                    ficha: Number(fichaId),
+                    insumo: item.tipo === "insumo" ? Number(item.insumo) : null,
+                    receita: item.tipo === "receita" ? Number(item.receita) : null,
+                    quantidade_utilizada: Number(item.quantidade_utilizada),
+                    unidade_medida: item.unidade_medida,
+                    ic: Number(item.ic),
+                    ic_tipo: item.ic_tipo,
+                    ipc: Number(item.ipc),
+                    aplicar_ic_ipc: Boolean(item.aplicar_ic_ipc)
+                  };
+                  
+                  return fetch("/api/ficha-tecnica-itens/", {
+                    method: "POST",
+                    headers: { 
+                      "Content-Type": "application/json",
+                      Authorization: "Bearer " + token
+                    },
+                    body: JSON.stringify(payload)
+                  }).then(res => {
+                    if (!res.ok) {
+                      return res.text().then(text => { 
+                        throw new Error(`Erro ao criar item: ${text}`); 
+                      });
+                    }
+                    return res.json();
+                  });
                 });
+                
+                return Promise.all(createPromises);
               });
             });
         })
-        .catch(() => setMsg("Erro ao atualizar ficha técnica."));
+        .then(() => {
+          setMsg("Ficha técnica atualizada com sucesso!");
+          setTimeout(() => navigate(`/restaurantes/${restauranteId}`), 1200);
+        })
+        .catch(error => {
+          console.error('Erro ao atualizar ficha técnica:', error);
+          setMsg(`Erro ao atualizar ficha técnica: ${error.message}`);
+        });
       return;
     }
+    
     // Cadastro normal (código original)
     // Validação dos itens
     for (const [idx, item] of itens.entries()) {
@@ -343,6 +392,7 @@ export default function FichaTecnicaForm() {
         return;
       }
     }
+    
     // Calcula peso e custo total antes de enviar
     const pesoFinal = pesoSalvo;
     const custoFinal = custoSalvo;
@@ -356,8 +406,10 @@ export default function FichaTecnicaForm() {
     if (imagem) {
       formData.append('imagem', imagem);
     }
+    
     fetch("/api/fichas-tecnicas/", {
       method: "POST",
+      headers: { Authorization: "Bearer " + token },
       body: formData
     })
       .then(async res => {
@@ -373,6 +425,7 @@ export default function FichaTecnicaForm() {
           setMsg("Erro ao cadastrar ficha técnica (ID não retornado).");
           return;
         }
+        
         Promise.all(
           itens.map(item => {
             const payload = {
@@ -386,9 +439,13 @@ export default function FichaTecnicaForm() {
               ipc: Number(item.ipc),
               aplicar_ic_ipc: Boolean(item.aplicar_ic_ipc)
             };
+            
             return fetch("/api/ficha-tecnica-itens/", {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+              headers: { 
+                "Content-Type": "application/json",
+                Authorization: "Bearer " + token
+              },
               body: JSON.stringify(payload)
             }).then(res => {
               if (!res.ok) {
@@ -401,7 +458,10 @@ export default function FichaTecnicaForm() {
         .then(() => {
           fetch(`/api/fichas-tecnicas/${data.id}/`, {
             method: "PATCH",
-            headers: { "Content-Type": "application/json" },
+            headers: { 
+              "Content-Type": "application/json",
+              Authorization: "Bearer " + token
+            },
             body: JSON.stringify({})
           });
           setMsg("Ficha técnica cadastrada com sucesso!");
@@ -411,7 +471,10 @@ export default function FichaTecnicaForm() {
           setMsg("Erro ao cadastrar item da ficha técnica: " + err.message);
         });
       })
-      .catch(() => setMsg("Erro ao cadastrar ficha técnica."));
+      .catch((error) => {
+        console.error('Erro ao cadastrar ficha técnica:', error);
+        setMsg(`Erro ao cadastrar ficha técnica: ${error.message}`);
+      });
   }
 
   return (

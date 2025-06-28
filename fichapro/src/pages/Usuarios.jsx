@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft, Search, Pencil, Trash2 } from 'lucide-react';
 import usePerfisUsuario from "../hooks/usePerfisUsuario";
+import dayjs from 'dayjs';
 
 export default function Usuarios() {
   const [usuarios, setUsuarios] = useState([]);
@@ -62,20 +63,28 @@ export default function Usuarios() {
   function handleSubmit(e) {
     e.preventDefault();
     setMsg("");
-    if (!form.restaurante || (Array.isArray(form.restaurante) && form.restaurante.length === 0)) {
+    // Só exige restaurante se não for administrador
+    if (form.perfil !== "administrador" && (!form.restaurante || (Array.isArray(form.restaurante) && form.restaurante.length === 0))) {
       setMsg("Selecione um restaurante para vincular o usuário.");
       return;
     }
     setLoadingCadastro(true);
+    // Monta o payload sem restaurante para admin
+    let payload = { ...form };
+    if (form.perfil === "administrador") {
+      delete payload.restaurante;
+      payload.is_staff = true;
+      payload.is_superuser = true;
+    } else if (form.perfil === "redator" && Array.isArray(form.restaurante)) {
+      payload.restaurante = form.restaurante.map(id => parseInt(id, 10));
+    } else {
+      // Para master e usuario_comum, garantir array
+      payload.restaurante = [parseInt(form.restaurante, 10)];
+    }
     fetch("/api/usuarios/criar/", {
       method: "POST",
       headers: getAuthHeaders(),
-      body: JSON.stringify({
-        ...form,
-        restaurante: form.perfil === "redator" && Array.isArray(form.restaurante)
-          ? form.restaurante.map(id => parseInt(id, 10))
-          : form.restaurante
-      })
+      body: JSON.stringify(payload)
     })
       .then(async res => {
         const data = await res.json();
@@ -173,6 +182,16 @@ export default function Usuarios() {
     setEditandoId(null);
   }
 
+  // Função para status visual
+  function getStatusColor(u) {
+    if (!u.is_active) return 'bg-red-500';
+    if (!u.last_login) return 'bg-red-500';
+    const diff = dayjs().diff(dayjs(u.last_login), 'minute');
+    if (diff <= 5) return 'bg-green-500';
+    if (diff <= 1440) return 'bg-yellow-400';
+    return 'bg-red-500';
+  }
+
   if (loading || loadingPerfis) return <div className="text-center text-gray-500 py-10">Carregando...</div>;
 
   const usuariosArray = Array.isArray(usuarios) ? usuarios : [];
@@ -232,7 +251,10 @@ export default function Usuarios() {
                 </div>
               </>
             ) : (
-              <select name="restaurante" value={form.restaurante} onChange={handleChange} required className="border rounded px-2 py-1 w-full">
+              <select name="restaurante" value={form.restaurante} onChange={handleChange} 
+                required={form.perfil !== "administrador"} 
+                disabled={form.perfil === "administrador"}
+                className="border rounded px-2 py-1 w-full">
                 <option value="">Selecione o restaurante</option>
                 {restaurantesFiltrados.map(r => (
                   <option key={r.id} value={r.id}>{r.nome}</option>
@@ -275,7 +297,10 @@ export default function Usuarios() {
               u.email.toLowerCase().includes(buscaUsuario.toLowerCase())
             ).map(u => (
               <tr key={u.id}>
-                <td className="py-2 px-3 font-medium text-gray-900">{u.username}</td>
+                <td className="py-2 px-3 font-medium text-gray-900 flex items-center gap-2">
+                  <span className={`inline-block w-3 h-3 rounded-full border border-gray-300 ${getStatusColor(u)}`}></span>
+                  {u.username}
+                </td>
                 <td className="py-2 px-3">{u.email}</td>
                 <td className="py-2 px-3">{u.is_active ? "Sim" : "Não"}</td>
                 <td className="py-2 px-3">
@@ -326,6 +351,11 @@ export default function Usuarios() {
             ))}
           </tbody>
         </table>
+      </div>
+      <div className="flex items-center gap-4 mt-2 text-xs">
+        <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-full bg-green-500 border border-gray-300"></span>Online</span>
+        <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-full bg-yellow-400 border border-gray-300"></span>Inativo</span>
+        <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-full bg-red-500 border border-gray-300"></span>Offline</span>
       </div>
     </div>
   );

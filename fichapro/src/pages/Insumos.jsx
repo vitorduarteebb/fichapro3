@@ -6,8 +6,11 @@ import { Plus, ArrowLeft } from 'lucide-react';
 export default function Insumos() {
   const { id } = useParams();
   const [insumos, setInsumos] = useState([]);
+  const [categorias, setCategorias] = useState([]);
+  const [novaCategoria, setNovaCategoria] = useState("");
+  const [showCategoriaModal, setShowCategoriaModal] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [form, setForm] = useState({ nome: "", peso: "", unidade_medida: "g", preco: "" });
+  const [form, setForm] = useState({ nome: "", peso: "", unidade_medida: "g", preco: "", categoria: "" });
   const [msg, setMsg] = useState("");
   const { perfis, loading: loadingPerfis } = usePerfisUsuario();
   const navigate = useNavigate();
@@ -22,16 +25,15 @@ export default function Insumos() {
   
   // Verificar se é admin global (is_staff ou is_superuser)
   const isAdmin = perfis && perfis.some(p => p.perfil === 'administrador' && p.restaurante === null);
-  const podeEditar = perfil === 'administrador' || perfil === 'redator' || isAdmin;
+  const podeEditar = perfil === 'administrador' || perfil === 'redator' || perfil === 'master' || isAdmin;
   const podeVerPreco = perfil === 'administrador' || perfil === 'master' || isAdmin;
 
   useEffect(() => {
     const token = localStorage.getItem('token');
-    if (!token) {
+    if (!token || !id || isNaN(Number(id))) {
       setLoading(false);
       return;
     }
-
     const headers = { Authorization: 'Bearer ' + token };
     fetch(`/api/insumos/?restaurante=${id}`, { headers })
       .then(res => {
@@ -47,6 +49,10 @@ export default function Insumos() {
         setInsumos([]);
         setLoading(false);
       });
+    // Buscar categorias
+    fetch(`/api/categorias-insumo/?restaurante=${id}`, { headers })
+      .then(res => res.json())
+      .then(data => setCategorias(Array.isArray(data) ? data : []));
   }, [id, msg]);
 
   function handleChange(e) {
@@ -57,53 +63,60 @@ export default function Insumos() {
     e.preventDefault();
     setMsg("");
     const token = localStorage.getItem('token');
-    
     if (!token) {
       setMsg("Erro: Usuário não autenticado");
       return;
     }
-    
-    // Garantir que todos os campos obrigatórios estejam preenchidos
     if (!form.nome || !form.peso) {
       setMsg("Erro: Nome e peso são obrigatórios");
       return;
     }
-    
-    // Se o usuário não pode ver o preço, usar 0 como padrão
     const dadosParaEnviar = {
       ...form,
-      restaurante: id,
-      preco: podeVerPreco ? form.preco : "0.00"
+      restaurante: Number(id),
+      preco: podeVerPreco ? form.preco : "0.00",
+      categoria: form.categoria || null
     };
-    
     const headers = { 
       "Content-Type": "application/json",
       "Authorization": "Bearer " + token
     };
-    
-    console.log('Enviando dados:', dadosParaEnviar);
-    
     fetch("/api/insumos/", {
       method: "POST",
       headers,
       body: JSON.stringify(dadosParaEnviar)
     })
       .then(res => {
-        console.log('Status da resposta:', res.status);
         if (res.ok) return res.json();
-        return res.text().then(text => {
-          console.error('Erro da API:', text);
-          throw new Error(`Erro ${res.status}: ${text}`);
-        });
+        return res.text().then(text => { throw new Error(`Erro ${res.status}: ${text}`); });
       })
       .then((data) => {
-        console.log('Resposta da API:', data);
         setMsg("Insumo cadastrado com sucesso!");
-        setForm({ nome: "", peso: "", unidade_medida: "g", preco: "" });
+        setForm({ nome: "", peso: "", unidade_medida: "g", preco: "", categoria: "" });
       })
       .catch((error) => {
-        console.error('Erro completo:', error);
         setMsg(`Erro ao cadastrar insumo: ${error.message}`);
+      });
+  }
+
+  function handleNovaCategoria(e) {
+    e.preventDefault();
+    const token = localStorage.getItem('token');
+    if (!novaCategoria) return;
+    fetch('/api/categorias-insumo/', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + token
+      },
+      body: JSON.stringify({ nome: novaCategoria, restaurante: Number(id) })
+    })
+      .then(res => res.json())
+      .then(data => {
+        setCategorias([...categorias, data]);
+        setForm(f => ({ ...f, categoria: data.id }));
+        setNovaCategoria("");
+        setShowCategoriaModal(false);
       });
   }
 
@@ -136,9 +149,33 @@ export default function Insumos() {
             <label className="block font-semibold text-gray-700 mb-1">Preço</label>
             <input name="preco" value={form.preco} onChange={handleChange} required type="number" step="0.01" min="0" className="border border-gray-300 rounded-lg px-4 py-2 w-full focus:outline-none focus:ring-2 focus:ring-blue-400 transition text-base" />
           </div>
+          <div>
+            <label className="block font-semibold text-gray-700 mb-1">Categoria</label>
+            <div className="flex gap-2">
+              <select name="categoria" value={form.categoria} onChange={handleChange} className="border border-gray-300 rounded-lg px-4 py-2 w-full focus:outline-none focus:ring-2 focus:ring-blue-400 transition text-base">
+                <option value="">Selecione</option>
+                {categorias.map(cat => (
+                  <option key={cat.id} value={cat.id}>{cat.nome}</option>
+                ))}
+              </select>
+              <button type="button" onClick={() => setShowCategoriaModal(true)} className="bg-blue-500 text-white px-3 py-2 rounded-lg font-bold hover:bg-blue-600 transition flex items-center"><Plus size={16}/> Nova</button>
+            </div>
+          </div>
           <button type="submit" className="w-full bg-green-600 text-white px-6 py-3 rounded-lg font-bold text-lg shadow hover:bg-green-700 transition mt-2 flex items-center justify-center gap-2"><Plus className="w-4 h-4" /> Cadastrar</button>
           {msg && <div className="mt-2 text-center text-sm text-blue-600">{msg}</div>}
         </form>
+        {showCategoriaModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-30 flex items-center justify-center z-50">
+            <div className="bg-white rounded-xl shadow-lg p-8 w-full max-w-sm">
+              <h2 className="text-lg font-bold mb-4">Nova Categoria</h2>
+              <form onSubmit={handleNovaCategoria} className="flex gap-2">
+                <input type="text" value={novaCategoria} onChange={e => setNovaCategoria(e.target.value)} placeholder="Nome da categoria" className="border border-gray-300 rounded-lg px-4 py-2 w-full focus:outline-none focus:ring-2 focus:ring-blue-400 transition text-base" />
+                <button type="submit" className="bg-blue-600 text-white px-4 py-2 rounded-lg font-bold hover:bg-blue-700 transition">Salvar</button>
+              </form>
+              <button onClick={() => setShowCategoriaModal(false)} className="mt-4 text-gray-500 hover:text-gray-800">Cancelar</button>
+            </div>
+          </div>
+        )}
         <h2 className="text-lg font-bold mb-2 text-gray-800 mt-8">Insumos cadastrados</h2>
         <div className="flex items-center mb-2">
           <input

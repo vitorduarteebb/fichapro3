@@ -10,8 +10,10 @@ export default function ReceitaDetalhe() {
   const [loading, setLoading] = useState(true);
   const [erro, setErro] = useState("");
   const { perfis, loading: loadingPerfis } = usePerfisUsuario();
-  const perfil = perfis[0]?.perfil;
-  const perfilLower = perfil?.toLowerCase();
+  const perfil = perfis[0]?.perfil?.toLowerCase();
+  const perfilLower = perfil;
+  const podeEditarOuExcluir = perfilLower === 'administrador' || perfilLower === 'redator';
+  const podeVerCusto = perfil === 'administrador' || perfil === 'master' || perfil === 'redator';
 
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -72,7 +74,12 @@ export default function ReceitaDetalhe() {
               <div><b>Porção:</b> {receita.porcao_sugerida}g</div>
               <div><b>Rendimento:</b> {receita.rendimento || '-'}</div>
               <div><b>Tempo de preparo:</b> {receita.tempo_preparo} min</div>
-              <div><b>Custo total:</b> R$ {Number(receita.custo_total).toFixed(2)}</div>
+              {podeVerCusto && (
+                <span className="font-bold">Custo total:</span>
+              )}
+              {podeVerCusto && (
+                <span>R$ {receita.custo_total?.toFixed(2) ?? '0.00'}</span>
+              )}
             </div>
             {(perfilLower === 'administrador' || perfilLower === 'master' || perfilLower === 'redator') && (
               <div className="grid grid-cols-2 gap-4 mt-4">
@@ -91,10 +98,10 @@ export default function ReceitaDetalhe() {
               </div>
             )}
             {erro && <div className="flex items-center gap-2 text-red-600 mt-2"><XCircle size={18}/>{erro}</div>}
-            {perfil === 'usuario' && (
+            {(podeEditarOuExcluir) && (
               <div className="flex gap-2 mt-4">
                 <button
-                  onClick={() => navigate(`/receitas/${receitaId}/editar`)}
+                  onClick={() => navigate(`/restaurantes/${receita.restaurante}/receitas/${receitaId}/editar`)}
                   className="flex items-center gap-1 bg-yellow-500 hover:bg-yellow-600 text-white px-3 py-1.5 rounded shadow font-semibold"
                 >
                   <Pencil size={16}/> Editar

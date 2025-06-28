@@ -28,6 +28,21 @@ class Restaurante(models.Model):
     def __str__(self):
         return self.nome
 
+class CategoriaInsumo(models.Model):
+    nome = models.CharField(max_length=100)
+    restaurante = models.ForeignKey(Restaurante, on_delete=models.CASCADE, related_name='categorias_insumo')
+
+    def __str__(self):
+        return self.nome
+
+class HistoricoPrecoInsumo(models.Model):
+    insumo = models.ForeignKey('Insumo', on_delete=models.CASCADE, related_name='historico_precos')
+    preco = models.DecimalField(max_digits=10, decimal_places=2)
+    data = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.insumo.nome} - {self.preco} em {self.data.strftime('%d/%m/%Y')}"
+
 class Insumo(models.Model):
     UNIDADES = [
         ("g", "Grama (g)"),
@@ -35,6 +50,7 @@ class Insumo(models.Model):
         ("un", "Unidade (un)"),
     ]
     restaurante = models.ForeignKey(Restaurante, on_delete=models.CASCADE, related_name="insumos")
+    categoria = models.ForeignKey(CategoriaInsumo, on_delete=models.SET_NULL, null=True, blank=True, related_name='insumos')
     nome = models.CharField(max_length=255)
     peso = models.DecimalField(max_digits=10, decimal_places=3)
     unidade_medida = models.CharField(max_length=2, choices=UNIDADES)
@@ -42,6 +58,16 @@ class Insumo(models.Model):
 
     def __str__(self):
         return f"{self.nome} ({self.restaurante.nome})"
+
+    def save(self, *args, **kwargs):
+        preco_antigo = None
+        if self.pk:
+            insumo_antigo = Insumo.objects.filter(pk=self.pk).first()
+            if insumo_antigo:
+                preco_antigo = insumo_antigo.preco
+        super().save(*args, **kwargs)
+        if preco_antigo is None or preco_antigo != self.preco:
+            HistoricoPrecoInsumo.objects.create(insumo=self, preco=self.preco)
 
 class Receita(models.Model):
     restaurante = models.ForeignKey(Restaurante, on_delete=models.CASCADE, related_name="receitas")
@@ -344,6 +370,11 @@ def registrar_receita_excluida(sender, instance, **kwargs):
 def atualizar_valores_sugeridos_receita(sender, instance, **kwargs):
     # Atualiza valor_restaurante e valor_ifood automaticamente
     if instance.custo_total is not None:
+        # Verifica se já está atualizando apenas os campos de valor para evitar loop
+        update_fields = kwargs.get('update_fields')
+        if update_fields and set(update_fields).issubset({'valor_restaurante', 'valor_ifood'}):
+            return  # Evita loop infinito
+            
         fator = float(instance.restaurante.fator_correcao) if instance.restaurante.fator_correcao else 1.0
         taxa_ifood = 0.12
         instance.valor_restaurante = round(float(instance.custo_total) * fator, 2)
@@ -387,6 +418,11 @@ def registrar_ficha_tecnica_excluida(sender, instance, **kwargs):
 def atualizar_valores_sugeridos_ficha(sender, instance, **kwargs):
     # Atualiza valor_restaurante e valor_ifood automaticamente
     if instance.custo_total is not None:
+        # Verifica se já está atualizando apenas os campos de valor para evitar loop
+        update_fields = kwargs.get('update_fields')
+        if update_fields and set(update_fields).issubset({'valor_restaurante', 'valor_ifood'}):
+            return  # Evita loop infinito
+            
         fator = float(instance.restaurante.fator_correcao) if instance.restaurante.fator_correcao else 1.0
         taxa_ifood = 0.12
         instance.valor_restaurante = round(float(instance.custo_total) * fator, 2)
@@ -425,3 +461,24 @@ def registrar_usuario_restaurante_excluido(sender, instance, **kwargs):
         nome=instance.usuario.username,
         descricao=f"Usuário {instance.usuario.username} desvinculado do restaurante {instance.restaurante.nome}"
     )
+
+@receiver(post_save, sender=Restaurante)
+def atualizar_valores_sugeridos_ao_mudar_fator(sender, instance, created, **kwargs):
+    if created:
+        return  # Só recalcula em edição
+    # Atualiza todas as receitas
+    for receita in instance.receitas.all():
+        if receita.custo_total is not None:
+            fator = float(instance.fator_correcao) if instance.fator_correcao else 1.0
+            taxa_ifood = 0.12
+            receita.valor_restaurante = round(float(receita.custo_total) * fator, 2)
+            receita.valor_ifood = round(float(receita.custo_total) * fator * (1 + taxa_ifood), 2)
+            receita.save(update_fields=["valor_restaurante", "valor_ifood"])
+    # Atualiza todas as fichas técnicas
+    for ficha in instance.fichas_tecnicas.all():
+        if ficha.custo_total is not None:
+            fator = float(instance.fator_correcao) if instance.fator_correcao else 1.0
+            taxa_ifood = 0.12
+            ficha.valor_restaurante = round(float(ficha.custo_total) * fator, 2)
+            ficha.valor_ifood = round(float(ficha.custo_total) * fator * (1 + taxa_ifood), 2)
+            ficha.save(update_fields=["valor_restaurante", "valor_ifood"])

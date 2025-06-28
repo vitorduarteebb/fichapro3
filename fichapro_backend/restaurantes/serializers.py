@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Restaurante, Insumo, Receita, ReceitaInsumo, FichaTecnica, FichaTecnicaItem, UsuarioRestaurantePerfil, RegistroAtividade
+from .models import Restaurante, Insumo, Receita, ReceitaInsumo, FichaTecnica, FichaTecnicaItem, UsuarioRestaurantePerfil, RegistroAtividade, CategoriaInsumo, HistoricoPrecoInsumo
 from django.contrib.auth.models import User
 
 class RestauranteSerializer(serializers.ModelSerializer):
@@ -7,7 +7,13 @@ class RestauranteSerializer(serializers.ModelSerializer):
         model = Restaurante
         fields = '__all__'
 
+class CategoriaInsumoSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CategoriaInsumo
+        fields = ['id', 'nome', 'restaurante']
+
 class InsumoSerializer(serializers.ModelSerializer):
+    categoria_nome = serializers.CharField(source='categoria.nome', read_only=True)
     class Meta:
         model = Insumo
         fields = '__all__'
@@ -176,9 +182,10 @@ class UsuarioRestaurantePerfilSerializer(serializers.ModelSerializer):
 
 class UserSerializer(serializers.ModelSerializer):
     perfis = serializers.SerializerMethodField()
+    last_login = serializers.DateTimeField(format="%Y-%m-%dT%H:%M:%S", required=False)
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'is_active', 'perfis']
+        fields = ['id', 'username', 'email', 'is_active', 'perfis', 'last_login']
     def get_perfis(self, obj):
         from .models import UsuarioRestaurantePerfil
         vinculos = UsuarioRestaurantePerfil.objects.filter(usuario=obj)
@@ -191,38 +198,31 @@ class UserSerializer(serializers.ModelSerializer):
 
 class UserCreateSerializer(serializers.ModelSerializer):
     perfil = serializers.ChoiceField(choices=[('administrador','Administrador'),('master','Master'),('redator','Redator'),('usuario_comum','Usuário Comum')])
-    restaurante = serializers.ListField(child=serializers.IntegerField(), write_only=True)
+    restaurante = serializers.ListField(child=serializers.IntegerField(), write_only=True, required=False)
     password = serializers.CharField(write_only=True)
     class Meta:
         model = User
         fields = ['username', 'email', 'password', 'perfil', 'restaurante']
     def validate_restaurante(self, value):
         from .models import Restaurante
-        if not value or (isinstance(value, list) and len(value) == 0):
-            raise serializers.ValidationError('O restaurante é obrigatório.')
-        if isinstance(value, list):
-            for v in value:
-                if not Restaurante.objects.filter(id=v).exists():
-                    raise serializers.ValidationError(f'Restaurante {v} não encontrado.')
-        else:
-            if not Restaurante.objects.filter(id=value).exists():
-                raise serializers.ValidationError('Restaurante não encontrado.')
+        # Só valida restaurante se não for administrador
+        perfil = self.initial_data.get('perfil')
+        if perfil != 'administrador' and (not value or len(value) == 0):
+            raise serializers.ValidationError('Selecione pelo menos um restaurante.')
         return value
     def create(self, validated_data):
         perfil = validated_data.pop('perfil')
-        restaurantes = validated_data.pop('restaurante')
-        password = validated_data.pop('password')
+        restaurantes = validated_data.pop('restaurante', [])
         user = User.objects.create_user(**validated_data)
-        user.set_password(password)
-        user.save()
-        from .models import UsuarioRestaurantePerfil, Restaurante
-        if perfil == 'redator' and isinstance(restaurantes, list):
-            for rid in restaurantes:
-                restaurante = Restaurante.objects.get(id=rid)
-                UsuarioRestaurantePerfil.objects.create(usuario=user, restaurante=restaurante, perfil=perfil)
+        if perfil == 'administrador':
+            user.is_staff = True
+            user.is_superuser = True
+            user.save()
         else:
-            restaurante = Restaurante.objects.get(id=restaurantes if not isinstance(restaurantes, list) else restaurantes[0])
-            UsuarioRestaurantePerfil.objects.create(usuario=user, restaurante=restaurante, perfil=perfil)
+            from .models import UsuarioRestaurantePerfil, Restaurante
+            for restaurante_id in restaurantes:
+                restaurante = Restaurante.objects.get(id=restaurante_id)
+                UsuarioRestaurantePerfil.objects.create(usuario=user, restaurante=restaurante, perfil=perfil)
         return user
 
 class UserUpdateSerializer(serializers.ModelSerializer):
@@ -250,3 +250,8 @@ class RegistroAtividadeSerializer(serializers.ModelSerializer):
     class Meta:
         model = RegistroAtividade
         fields = ['id', 'usuario', 'usuario_nome', 'perfil', 'tipo', 'acao', 'nome', 'descricao', 'data_hora'] 
+
+class HistoricoPrecoInsumoSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = HistoricoPrecoInsumo
+        fields = ['id', 'preco', 'data'] 

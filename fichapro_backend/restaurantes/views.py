@@ -1,15 +1,30 @@
 from django.shortcuts import render
 from rest_framework import viewsets
-from .models import Restaurante, Insumo, Receita, ReceitaInsumo, FichaTecnica, FichaTecnicaItem, UsuarioRestaurantePerfil, RegistroAtividade
-from .serializers import RestauranteSerializer, InsumoSerializer, ReceitaSerializer, ReceitaInsumoSerializer, FichaTecnicaSerializer, FichaTecnicaItemSerializer, UsuarioRestaurantePerfilSerializer, UserSerializer, UserCreateSerializer, UserUpdateSerializer, RegistroAtividadeSerializer
+from .models import Restaurante, Insumo, Receita, ReceitaInsumo, FichaTecnica, FichaTecnicaItem, UsuarioRestaurantePerfil, RegistroAtividade, CategoriaInsumo
+from .serializers import RestauranteSerializer, InsumoSerializer, ReceitaSerializer, ReceitaInsumoSerializer, FichaTecnicaSerializer, FichaTecnicaItemSerializer, UsuarioRestaurantePerfilSerializer, UserSerializer, UserCreateSerializer, UserUpdateSerializer, RegistroAtividadeSerializer, CategoriaInsumoSerializer, HistoricoPrecoInsumoSerializer
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.exceptions import PermissionDenied
 from django.contrib.auth.models import User
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view, permission_classes
 from django.db import transaction
 from rest_framework import permissions
+from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from django.contrib.auth.models import update_last_login
+from django.db.models import Count, Sum, F, Q
+
+# Custom JWT login que atualiza o last_login
+class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        user = self.user
+        update_last_login(None, user)
+        return data
+
+class CustomTokenObtainPairView(TokenObtainPairView):
+    serializer_class = CustomTokenObtainPairSerializer
 
 # Create your views here.
 
@@ -63,11 +78,13 @@ class RestauranteViewSet(viewsets.ModelViewSet):
 
     def get_user_perfil(self, usuario, restaurante):
         """Obtém o perfil do usuário no restaurante"""
+        if is_admin(usuario):
+            return "administrador"
         try:
             vinculo = UsuarioRestaurantePerfil.objects.get(usuario=usuario, restaurante=restaurante)
             return vinculo.perfil
         except UsuarioRestaurantePerfil.DoesNotExist:
-            return "administrador"  # Fallback para admin
+            return None
 
 class InsumoViewSet(viewsets.ModelViewSet):
     queryset = Insumo.objects.all()
@@ -112,6 +129,13 @@ class InsumoViewSet(viewsets.ModelViewSet):
         if not (is_admin(user) or is_master(user, restaurante_id) or is_redator(user, restaurante_id)):
             raise PermissionDenied('Você não tem permissão para excluir insumos.')
         return super().destroy(request, *args, **kwargs)
+
+    @action(detail=True, methods=['get'])
+    def historico_preco(self, request, pk=None):
+        insumo = self.get_object()
+        historico = insumo.historico_precos.order_by('data')
+        serializer = HistoricoPrecoInsumoSerializer(historico, many=True)
+        return Response(serializer.data)
 
 class ReceitaViewSet(viewsets.ModelViewSet):
     queryset = Receita.objects.all().prefetch_related('itens__insumo', 'itens__receita', 'itens')
@@ -209,6 +233,19 @@ class FichaTecnicaViewSet(viewsets.ModelViewSet):
             return qs.filter(restaurante_id__in=restaurante_ids)
         return qs.none()
 
+    def get_object(self):
+        obj = super().get_object()
+        user = self.request.user
+        if is_admin(user):
+            return obj
+        restaurante_id = getattr(obj, 'restaurante_id', None)
+        if restaurante_id:
+            perfil = get_perfil_usuario_restaurante(user, restaurante_id)
+            if perfil in ['master', 'redator', 'usuario_comum']:
+                return obj
+        from rest_framework import exceptions
+        raise exceptions.PermissionDenied('Você não tem permissão para acessar esta ficha técnica.')
+
     def create(self, request, *args, **kwargs):
         user = request.user
         restaurante_id = request.data.get('restaurante')
@@ -242,10 +279,83 @@ class FichaTecnicaItemViewSet(viewsets.ModelViewSet):
     serializer_class = FichaTecnicaItemSerializer
     permission_classes = [IsAuthenticated]
 
+    def get_queryset(self):
+        qs = super().get_queryset()
+        ficha_id = self.request.query_params.get('ficha')
+        if ficha_id:
+            qs = qs.filter(ficha_id=ficha_id)
+        
+        user = self.request.user
+        if not user or not hasattr(user, 'is_authenticated') or not user.is_authenticated:
+            return qs.none()
+        
+        # Administradores podem ver todos os itens
+        if is_admin(user):
+            return qs
+        
+        # Para usuários não-admin, filtrar por restaurantes que eles têm acesso
+        vinculos = UsuarioRestaurantePerfil.objects.filter(usuario=user)
+        restaurante_ids = [v.restaurante_id for v in vinculos if v.perfil in ['master', 'redator', 'usuario_comum']]
+        if restaurante_ids:
+            return qs.filter(ficha__restaurante_id__in=restaurante_ids)
+        
+        return qs.none()
+
+    def create(self, request, *args, **kwargs):
+        user = request.user
+        ficha_id = request.data.get('ficha')
+        
+        if ficha_id:
+            try:
+                ficha = FichaTecnica.objects.get(id=ficha_id)
+                restaurante_id = ficha.restaurante_id
+                if not (is_admin(user) or is_master(user, restaurante_id) or is_redator(user, restaurante_id)):
+                    raise PermissionDenied('Você não tem permissão para criar itens de ficha técnica.')
+            except FichaTecnica.DoesNotExist:
+                raise PermissionDenied('Ficha técnica não encontrada.')
+        
+        return super().create(request, *args, **kwargs)
+
+    def update(self, request, *args, **kwargs):
+        user = request.user
+        instance = self.get_object()
+        ficha = instance.ficha
+        restaurante_id = ficha.restaurante_id
+        
+        if not (is_admin(user) or is_master(user, restaurante_id) or is_redator(user, restaurante_id)):
+            raise PermissionDenied('Você não tem permissão para editar itens de ficha técnica.')
+        
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        user = request.user
+        instance = self.get_object()
+        ficha = instance.ficha
+        restaurante_id = ficha.restaurante_id
+        
+        if not (is_admin(user) or is_master(user, restaurante_id) or is_redator(user, restaurante_id)):
+            raise PermissionDenied('Você não tem permissão para excluir itens de ficha técnica.')
+        
+        return super().destroy(request, *args, **kwargs)
+
 class MeusPerfisView(APIView):
     permission_classes = [IsAuthenticated]
     def get(self, request):
-        perfis = UsuarioRestaurantePerfil.objects.filter(usuario=request.user)
+        user = request.user
+        
+        # Se for administrador, retornar perfil especial sem vínculo com restaurante
+        if is_admin(user):
+            return Response([{
+                'id': 0,
+                'usuario': user.id,
+                'restaurante': None,
+                'restaurante_nome': 'Sistema',
+                'perfil': 'administrador',
+                'perfil_display': 'Administrador do Sistema'
+            }])
+        
+        # Para usuários não-admin, retornar vínculos normais
+        perfis = UsuarioRestaurantePerfil.objects.filter(usuario=user)
         serializer = UsuarioRestaurantePerfilSerializer(perfis, many=True)
         return Response(serializer.data)
 
@@ -346,3 +456,72 @@ def atualizar_registro_atividade(usuario, perfil, tipo, acao, nome, descricao=""
             ultimo_registro.save()
     except Exception as e:
         print(f"Erro ao atualizar registro de atividade: {e}")
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def dashboard_admin(request):
+    # Total de restaurantes
+    total_restaurantes = Restaurante.objects.count()
+
+    # Ranking de restaurantes (por número de receitas + fichas técnicas)
+    restaurantes = Restaurante.objects.annotate(
+        total_registros=Count('receitas', distinct=True) + Count('fichas_tecnicas', distinct=True)
+    ).order_by('-total_registros')[:10]
+    ranking_restaurantes = [
+        {
+            'nome': r.nome,
+            'registros': r.total_registros
+        } for r in restaurantes
+    ]
+
+    # Ranking de redatores (por criações/edições)
+    redatores = User.objects.filter(
+        vinculos__perfil='redator'
+    ).distinct()
+    ranking_redatores = []
+    for user in redatores:
+        # Não é possível contar por 'criado_por', então apenas adicionar o usuário ao ranking com 0
+        ranking_redatores.append({
+            'id': user.id,
+            'username': user.username,
+            'total_criados': 0
+        })
+
+    # Maiores custos (top 5 receitas/fichas técnicas)
+    maiores_custos_receitas = Receita.objects.order_by('-custo_total')[:5]
+    maiores_custos_fichas = FichaTecnica.objects.order_by('-custo_total')[:5]
+    maiores_custos = [
+        {'nome': r.nome, 'custo_total': r.custo_total} for r in maiores_custos_receitas
+    ] + [
+        {'nome': f.nome, 'custo_total': f.custo_total} for f in maiores_custos_fichas
+    ]
+    maiores_custos = sorted(maiores_custos, key=lambda x: x['custo_total'], reverse=True)[:5]
+
+    return Response({
+        'total_restaurantes': total_restaurantes,
+        'ranking_restaurantes': ranking_restaurantes,
+        'ranking_redatores': ranking_redatores,
+        'maiores_custos': maiores_custos
+    })
+
+class CategoriaInsumoViewSet(viewsets.ModelViewSet):
+    queryset = CategoriaInsumo.objects.all()
+    serializer_class = CategoriaInsumoSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        restaurante_id = self.request.query_params.get('restaurante')
+        if restaurante_id:
+            qs = qs.filter(restaurante_id=restaurante_id)
+        user = self.request.user
+        if not user or not hasattr(user, 'is_authenticated') or not user.is_authenticated:
+            return qs.none()
+        if is_admin(user):
+            return qs
+        # Para usuários não-admin, buscar todos os restaurantes que eles têm acesso
+        vinculos = UsuarioRestaurantePerfil.objects.filter(usuario=user)
+        restaurante_ids = [v.restaurante_id for v in vinculos if v.perfil in ['master', 'redator', 'usuario_comum']]
+        if restaurante_ids:
+            return qs.filter(restaurante_id__in=restaurante_ids)
+        return qs.none()
